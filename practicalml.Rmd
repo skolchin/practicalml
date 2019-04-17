@@ -1,0 +1,28 @@
+---
+title: "Practical machine learning course project"
+author: "Kolchin"
+date: '17/04/2019'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(readr)
+
+```
+
+## Data loading
+```{r load_datasets}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+```
+The data contains data from accelerometers placed on the belt, forearm, arm, and dumbell provided by 6 participants doing some kinds of physical activity.
+
+Two datasets with training and testing data were loaded from the course' [description page](https://www.coursera.org/learn/practical-machine-learning/supplement/PvInj/course-project-instructions-read-first).
+
+Both datasets contain `r dim(training)[2]` variables. Training dataset contains `r dim(training)[1]` observations, while testing dataset contains `r dim(testing)[1]` observations.
+
+Additional information on the datasets can be obtained [here](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises).
