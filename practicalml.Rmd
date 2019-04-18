@@ -1,7 +1,7 @@
 ---
 title: "Practical machine learning course project"
-author: "Kolchin"
-date: '17/04/2019'
+author: "Sergey Kolchin"
+date: '18/04/2019'
 output: html_document
 ---
 
@@ -11,18 +11,204 @@ library(caret)
 library(dplyr)
 library(ggplot2)
 library(readr)
+library(doParallel)
 
+cc <- c("max_roll_belt" = "numeric",
+        "max_picth_belt" = "numeric", 
+        "min_roll_belt" = "numeric", 
+        "min_pitch_belt" = "numeric", 
+        "amplitude_roll_belt" = "numeric", 
+        "amplitude_pitch_belt" = "numeric", 
+        "var_total_accel_belt" = "numeric", 
+        "avg_roll_belt" = "numeric", 
+        "stddev_roll_belt" = "numeric", 
+        "var_roll_belt" = "numeric", 
+        "avg_pitch_belt" = "numeric", 
+        "stddev_pitch_belt" = "numeric", 
+        "var_pitch_belt" = "numeric", 
+        "avg_yaw_belt" = "numeric", 
+        "stddev_yaw_belt" = "numeric", 
+        "var_yaw_belt" = "numeric", 
+        "var_accel_arm" = "numeric", 
+        "max_picth_arm" = "numeric", 
+        "max_yaw_arm" = "numeric", 
+        "min_yaw_arm" = "numeric", 
+        "amplitude_yaw_arm" = "numeric", 
+        "max_roll_dumbbell" = "numeric", 
+        "max_picth_dumbbell" = "numeric", 
+        "min_roll_dumbbell" = "numeric", 
+        "min_pitch_dumbbell" = "numeric", 
+        "amplitude_roll_dumbbell" = "numeric", 
+        "amplitude_pitch_dumbbell" = "numeric", 
+        "var_accel_dumbbell" = "numeric", 
+        "avg_roll_dumbbell" = "numeric", 
+        "stddev_roll_dumbbell" = "numeric", 
+        "var_roll_dumbbell" = "numeric", 
+        "avg_pitch_dumbbell" = "numeric", 
+        "stddev_pitch_dumbbell" = "numeric", 
+        "var_pitch_dumbbell" = "numeric", 
+        "avg_yaw_dumbbell" = "numeric", 
+        "stddev_yaw_dumbbell" = "numeric", 
+        "var_yaw_dumbbell" = "numeric", 
+        "max_picth_forearm" = "numeric", 
+        "min_pitch_forearm" = "numeric", 
+        "amplitude_pitch_forearm" = "numeric", 
+        "var_accel_forearm" = "numeric"
+)
 ```
 
-## Data loading
+## The data
+
 ```{r load_datasets}
-training <- read.csv("pml-training.csv")
-testing <- read.csv("pml-testing.csv")
+# read.csv incorrectly determines column types containing only NAs
+training <- read.csv("pml-training.csv", colClasses = cc)
+testing <- read.csv("pml-testing.csv", colClasses = cc)
 ```
-The data contains data from accelerometers placed on the belt, forearm, arm, and dumbell provided by 6 participants doing some kinds of physical activity.
+
+The project goal is to analyze  data from accelerometers placed on the belt, forearm, arm, and dumbell provided by 6 participants doing some kinds of physical activity and predict the activity class using this data.
 
 Two datasets with training and testing data were loaded from the course' [description page](https://www.coursera.org/learn/practical-machine-learning/supplement/PvInj/course-project-instructions-read-first).
 
-Both datasets contain `r dim(training)[2]` variables. Training dataset contains `r dim(training)[1]` observations, while testing dataset contains `r dim(testing)[1]` observations.
+The datasets contain `r dim(training)[2]` variables. Training dataset contains `r dim(training)[1]` observations, while testing dataset contains `r dim(testing)[1]` observations.
 
 Additional information on the datasets can be obtained [here](http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises).
+
+
+## Feature selection
+
+The outcome of the prediction is ``classe`` variable, which holds a classified result of the exercise. Class A corresponds to the specified execution, while the other 4 classes correspond to common mistakes.
+
+A histogram of classes distribution in the training dataset is provided below.
+
+```{r classe_analysis}
+plot(training$classe)
+```
+
+Let's review other variables in the dataset.
+
+There are some technical attributes indicating a person or time when the execution was performed. They need to be removed.
+
+```{r remove-tech}
+valid_df <- subset(training, 
+            select = c(
+              -X, -user_name, -raw_timestamp_part_1,
+              -raw_timestamp_part_2, -cvtd_timestamp, -new_window,
+              -num_window))
+
+```
+
+Near zero covariates can also to be removed.
+
+```{r remove-nzv}
+nzv <- nearZeroVar(valid_df)
+valid_df <- valid_df[, -nzv]
+```
+
+There are several variables which contain mostly NA values. They would not provide any value in modeling, so they should also be removed.
+
+```{r remove_nna}
+nna <- sapply(valid_df, function(x) mean(is.na(x))) > 0.95
+valid_df <- valid_df[, nna == FALSE]
+```
+
+Now, split the dataset onto training and testing samples. The training dataset will be used for modeling, while the testing one - for model verification. 
+
+```{r split_ds}
+inTrain <- createDataPartition(valid_df$classe, p = 0.75, list = FALSE)
+train_df <- valid_df[inTrain, ]
+test_df <- valid_df[-inTrain, ]
+
+```
+
+Below is a feature plot of the training dataset. 
+
+```{r plot_features }
+total_cols <- which(grepl("^total", colnames(train_df), ignore.case = F))
+
+train_features <- train_df[, total_cols]
+
+featurePlot(x = train_features, y = train_df$classe, pch = 19, main = "Feature plot", plot = "pairs")
+
+```
+
+The remaining dataset contains `r dim(valid_df)[2]` variables, including the outcome variable.
+
+In order to reduce number of features, the PCA is applied.
+
+```{r apply_pca}
+pca_result <- preProcess(train_df[,-53], method="pca")
+train_pca_df <- predict(pca_result, train_df)
+pca_result
+```
+
+After applying the PCA, number of predictors has decreased to `r length(colnames(pca_result$rotation))`.
+
+
+## Modeling
+
+A Random Forest method is selected for modeling. Parallel execution is enabled using ``doParallel`` library. To improve the accuracy, repeated cross-validation method is applied.
+
+Traning is performed on PCA results.
+
+```{r do_modeling}
+cl <- makePSOCKcluster(3)
+registerDoParallel(cl)
+
+m_rf <- train(classe ~ .,
+              data = train_pca_df,
+              method = "rf",
+              metric = "Accuracy",
+              trainControl = trainControl(
+                method="repeatedcv",
+                number=4,
+                repeats=3,
+                allowParallel = TRUE)
+)
+stopCluster(cl)
+m_rf
+
+m_rf$finalModel
+
+plot(m_rf, log = "y", 
+     lwd = 2, main = "Random forest accuracy", xlab = "Predictors",
+     ylab = "Accuracy")
+
+```
+
+In-sample error can be calculated is 1 - (accuracy of best guess) on the fitted model.
+
+```{r calc_insample}
+m <- m_rf$bestTune$mtry
+insample_error <- 1 - m_rf$results[m,]$Accuracy
+insample_error
+```
+
+Out-of-sample error can be calculated by applying the model to the testing dataset and calculating proportion of successfull predictions.
+
+A PCA-adapted version of the testing dataset has to be used.
+
+```{r calc_outsample}
+test_pca_df <- predict(pca_result, newdata = test_df)
+test_pred <- predict(m_rf, newdata = test_pca_df)
+
+oosample_accuracy <- sum(test_pred == test_pca_df$classe) / length(test_pred)
+
+oosample_error <- 1 - oosample_accuracy
+oosample_error
+```
+
+## Prediction
+
+Apply the model to the testing dataset provided by the course.
+A PCA-adapted version of the dataset has to be used.
+
+```{r final_predict }
+testing_pca_df <- predict(pca_result, newdata = testing)
+testing_pred <- predict(m_rf, newdata = testing_pca_df)
+testing_pred
+```
+
+
+
+
+
